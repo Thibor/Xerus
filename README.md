@@ -4,7 +4,7 @@
 <img src="/Resources/Xerus.png" />
     <br>
     <br>
-    <b><i>Single file small uci chess engine 2650 elo.</i></b>
+    <b><i>Single file small uci chess engine 2600 elo.</i></b>
     <br>
     <br>
     <img src="https://img.shields.io/github/downloads/Thibor/Xerus/total?color=critical&style=for-the-badge">
@@ -18,7 +18,7 @@ FIDE-rules-compliant chess engine
 
 ## Features
 
-- Elo 2650
+- Elo 2600
 - Single file
 - Protocol UCI
 - Board 8 reversible bitboards
