@@ -38,8 +38,7 @@ using namespace std;
 #define FILE_H_BB 0x8080808080808080ULL
 #define BIT(square) (1ULL << (square))
 #define FLIP_BB(bitboard) _byteswap_uint64(bitboard)
-#define FLIP_SQ(sq) ((sq)^56)
-#define TIME_MS() GetTickCount64()
+#define FLIP_SQ(sq) ((sq) ^ 0x38)
 #define LSB(bitboard) _tzcnt_u64(bitboard)
 #define COUNT(bitboard) _mm_popcnt_u64(bitboard)
 
@@ -371,6 +370,24 @@ static inline void HHClear() { memset(hh, 0, sizeof(hh)); }
 static inline void TTClear() { memset(tt, 0, sizeof(TTEntry) * ttCount); }
 static inline void TTEvalClear() { memset(ttEval, 0, sizeof(TTEntryEval) * ttCount); }
 
+static inline U64 GetTimeMs() {
+#if defined(_WIN32)
+	static LARGE_INTEGER freq;
+	static int init = 0;
+	if (!init) {
+		QueryPerformanceFrequency(&freq);
+		init = 1;
+	}
+	LARGE_INTEGER counter;
+	QueryPerformanceCounter(&counter);
+	return (U64)((counter.QuadPart * 1000) / freq.QuadPart);
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (U64)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#endif
+}
+
 static string StrToLower(string s) {
 	transform(s.begin(), s.end(), s.begin(), ::tolower);
 	return s;
@@ -488,7 +505,7 @@ static void ResetInfo() {
 	info.depthLimit = MAX_PLY;
 	info.nodesLimit = 0;
 	info.timeLimit = 0;
-	info.timeStart = TIME_MS();
+	info.timeStart = GetTimeMs();
 }
 
 
@@ -531,17 +548,12 @@ static U64 KingAttack(const int sq, U64) {
 	return bbKingAttack[sq];
 }
 
-// create mask for slider excluding edge squares
-static U64 mask_rook_attacks(int sq) {
+static U64 MaskRookAttacks(int sq) {
 	U64 attacks = 0ULL;
 	int r = sq / 8, f = sq % 8;
-	// North
 	for (int rr = r + 1; rr <= 6; ++rr) attacks |= (1ULL << (rr * 8 + f));
-	// South
 	for (int rr = r - 1; rr >= 1; --rr) attacks |= (1ULL << (rr * 8 + f));
-	// East
 	for (int ff = f + 1; ff <= 6; ++ff) attacks |= (1ULL << (r * 8 + ff));
-	// West
 	for (int ff = f - 1; ff >= 1; --ff) attacks |= (1ULL << (r * 8 + ff));
 	return attacks;
 }
@@ -549,13 +561,9 @@ static U64 mask_rook_attacks(int sq) {
 static U64 MaskBishopAttacks(int sq) {
 	U64 attacks = 0ULL;
 	int r = sq / 8, f = sq % 8;
-	// NE
 	for (int rr = r + 1, ff = f + 1; rr <= 6 && ff <= 6; ++rr, ++ff) attacks |= (1ULL << (rr * 8 + ff));
-	// NW
 	for (int rr = r + 1, ff = f - 1; rr <= 6 && ff >= 1; ++rr, --ff) attacks |= (1ULL << (rr * 8 + ff));
-	// SE
 	for (int rr = r - 1, ff = f + 1; rr >= 1 && ff <= 6; --rr, ++ff) attacks |= (1ULL << (rr * 8 + ff));
-	// SW
 	for (int rr = r - 1, ff = f - 1; rr >= 1 && ff >= 1; --rr, --ff) attacks |= (1ULL << (rr * 8 + ff));
 	return attacks;
 }
@@ -582,7 +590,7 @@ static void InitMagics() {
 	// initialize masks and tables
 	for (int sq = 0; sq < 64; ++sq) {
 		bishopMask[sq] = MaskBishopAttacks(sq);
-		rookMask[sq] = mask_rook_attacks(sq);
+		rookMask[sq] = MaskRookAttacks(sq);
 
 		int bbits = bishop_relevant_bits[sq];
 		int rbits = rook_relevant_bits[sq];
@@ -799,7 +807,7 @@ static bool InputAvailable() {
 
 static bool CheckUp(Position& pos) {
 	if ((++info.nodes & 0xffff) == 0) {
-		if (info.timeLimit && TIME_MS() - info.timeStart > info.timeLimit)
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
 			info.stop = true;
 		if (info.nodesLimit && info.nodes > info.nodesLimit)
 			info.stop = true;
@@ -898,8 +906,8 @@ static int EvalPosition(Position& pos) {
 		file0 |= East(file0) | West(file0);
 		U64 bbAttack0 = file0 & ~(FILE_D_BB | FILE_E_BB);
 		bbAttack0 &= (pos.color[0] & pos.pieces[PAWN]);
-		scoreMg += COUNT(bbAttack0 & RANK_3_BB) * 8;
 		scoreMg += COUNT(bbAttack0 & RANK_2_BB) * 16;
+		scoreMg += COUNT(bbAttack0 & RANK_3_BB) * 8;
 		FlipPosition(pos);
 		score = -score;
 		scoreMg = -scoreMg;
@@ -920,7 +928,7 @@ static int EvalHash(Position& pos, U64 hash) {
 	return (ee.score * (100 - pos.move50)) / 100;
 }
 
-static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int ply, Stack* const stack, const bool do_null = true) {
+static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int ply, Stack* const stack, const bool doNull = true) {
 	if (CheckUp(pos))
 		return 0;
 	int  mate_value = MATE - ply;
@@ -955,19 +963,13 @@ static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int 
 	else
 		depth -= depth > 3;
 
-	const bool improving = ply > 1 && staticEval > stack[ply - 2].score;
-
-	// If static_eval > tt_entry.score, tt_entry.flag cannot be Lower (ie must be Upper or Exact).
-	// Otherwise, tt_entry.flag cannot be Upper (ie must be Lower or Exact).
-	if (ttEntry.key == hash && ttEntry.flag != staticEval > ttEntry.score)
-		staticEval = ttEntry.score;
-
 	if (inQuiescence && staticEval > alpha) {
 		if (staticEval >= beta)
 			return staticEval;
 		alpha = staticEval;
 	}
 
+	const bool improving = ply > 1 && staticEval > stack[ply - 2].score;
 	if (ply && !inQuiescence && !inCheck && !inPv) {
 		// Reverse futility pruning
 		if (depth < 8) {
@@ -978,18 +980,12 @@ static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int 
 		}
 
 		// Null move pruning
-		if (depth > 2 && staticEval >= beta && staticEval >= stack[ply].score && do_null &&
+		if (depth > 2 && staticEval >= beta && staticEval >= stack[ply].score && doNull &&
 			pos.color[0] & ~pos.pieces[PAWN] & ~pos.pieces[KING]) {
 			Position npos = pos;
 			FlipPosition(npos);
 			npos.ep = 0;
-			if (-SearchAlpha(npos,
-				-beta,
-				-alpha,
-				depth - 4 - depth / 5 - min((staticEval - beta) / 196, 3),
-				ply + 1,
-				stack,
-				false) >= beta)
+			if (-SearchAlpha(npos,-beta,-alpha,depth - 4 - depth / 5 - min((staticEval - beta) / 196, 3),ply + 1,stack,false) >= beta)
 				return beta;
 		}
 	}
@@ -1047,13 +1043,18 @@ static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int 
 		if (!legalCount || depth < 4)
 			score = -SearchAlpha(npos, -beta, -alpha, depth - 1, ply + 1, stack, 1);
 		else {
+			const int givesCheck = IsAttacked(npos, LSB(npos.color[0] & npos.pieces[KING]), 1);
 			int r = LINEAR_REDUCTION[min(63, depth)][min(63, legalCount)];
 			if (inPv)
 				r--;
-			if (r < 0)
-				r = 0;
+			if (inCheck || givesCheck)
+				r--;
+			if (gain)
+				r--;
 			if (r > depth - 2)
 				r = depth - 2;
+			if (r < 0)
+				r = 0;
 			score = -SearchAlpha(npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1, stack, 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(npos, -alpha - 1, -alpha, depth - 1, ply + 1, stack, 1);
@@ -1079,7 +1080,7 @@ static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int 
 					cout << "cp " << score;
 				else
 					cout << "mate " << (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1);
-				const auto elapsed = TIME_MS() - info.timeStart;
+				const auto elapsed = GetTimeMs() - info.timeStart;
 				cout << " time " << elapsed;
 				cout << " nodes " << info.nodes;
 				cout << " hashfull " << Permill() << " pv";
@@ -1094,7 +1095,7 @@ static int SearchAlpha(Position& pos, int alpha, int beta, int depth, const int 
 					stack[ply].killer1 = move;
 					int bonus = depth * depth;
 					hh[pos.flipped][move.from][move.to] +=
-						depth * depth - depth * depth * hh[pos.flipped][move.from][move.to] / 512;
+						bonus - bonus * hh[pos.flipped][move.from][move.to] / 512;
 					for (int j = 0; j < quietCount; ++j) {
 						hh[pos.flipped][quietList[j].from][quietList[j].to] -=
 							bonus + bonus * hh[pos.flipped][quietList[j].from][quietList[j].to] / 512;
@@ -1146,7 +1147,7 @@ static void SearchIteratively(Position& pos) {
 		} while (!info.stop);
 		if (info.stop)
 			break;
-		if (info.timeLimit && TIME_MS() - info.timeStart > info.timeLimit / 2)
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2)
 			break;
 	}
 	if (info.post)
@@ -1250,7 +1251,7 @@ static void UciBench(Position& pos) {
 	while (elapsed < 8000) {
 		++info.depthLimit;
 		SearchIteratively(pos);
-		elapsed = TIME_MS() - info.timeStart;
+		elapsed = GetTimeMs() - info.timeStart;
 		printf(" %2d. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
 	}
 	PrintSummary(elapsed, info.nodes);
@@ -1264,8 +1265,9 @@ static void UciPerformance(Position& pos) {
 	S64 elapsed = 0;
 	while (elapsed < 4000) {
 		info.nodes = 0;
+		info.timeStart = GetTimeMs();
 		PerftDriver(pos, info.depthLimit++);
-		elapsed = TIME_MS() - info.timeStart;
+		elapsed = GetTimeMs() - info.timeStart;
 		printf(" %2d. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
 	}
 	PrintSummary(elapsed, info.nodes);
@@ -1426,6 +1428,7 @@ static void Init() {
 	for (int depth = 1; depth < 64; depth++)
 		for (int legal = 1; legal < 64; legal++)
 			LINEAR_REDUCTION[depth][legal] = (int)(0.75 + log(depth) * log(legal) / 2.25);
+			//LINEAR_REDUCTION[depth][legal] = (int)(0.8 + log(depth) * log(legal) / 2.00);
 }
 
 static void InitHash() {

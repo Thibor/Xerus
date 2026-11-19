@@ -18,7 +18,7 @@ FIDE-rules-compliant chess engine
 
 ## Features
 
-- Elo 2600
+- Strength 2600 elo
 - Single file
 - Protocol UCI
 - Board 8 reversible bitboards
